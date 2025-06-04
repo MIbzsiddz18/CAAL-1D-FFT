@@ -3,22 +3,192 @@
 .section .text
 .global _start
 _start:
-## START YOUR CODE HERE
+    la a0, matrix
+    la t0, size
+    lw a1, 0(t0)         # Load matrix size into a1
+    call bit_reverse
 
-la a0, matrix
-lw a1, size
-call printToLog
+    la a0, matrix
+    la t0, size
+    lw a1, 0(t0)
+    call fft_all_stages
 
-la a0, matrix
-lw a1, size
-call transpose
+    la a0, matrix
+    la t0, size
+    lw a1, 0(t0)
+    call printToLog
+    j _finish
 
-la a0, matrix
-lw a1, size
-call printToLog
+############################################################
+# Bit reversal of array based on index
+bit_reverse:
+    addi sp, sp, -20
+    sw ra, 16(sp)
+    sw s0, 12(sp)
+    sw s1, 8(sp)
+    sw s2, 4(sp)
+    sw s3, 0(sp)
 
+    mv s0, a0      # base address of matrix
+    mv s1, a1      # N
 
-j _finish
+    li t0, 0       # i = 0
+loop_i:
+    bge t0, s1, done_bit_reverse
+    mv a2, t0
+    mv a3, s1
+    call reverse_bits
+    mv t1, a0      # reversed index
+
+    blt t0, t1, swap_elements
+
+next_i:
+    addi t0, t0, 1
+    j loop_i
+
+swap_elements:
+    slli t2, t0, 2
+    add t2, s0, t2
+    flw ft0, 0(t2)
+
+    slli t3, t1, 2
+    add t3, s0, t3
+    flw ft1, 0(t3)
+
+    fsw ft1, 0(t2)
+    fsw ft0, 0(t3)
+    j next_i
+
+done_bit_reverse:
+    lw ra, 16(sp)
+    lw s0, 12(sp)
+    lw s1, 8(sp)
+    lw s2, 4(sp)
+    lw s3, 0(sp)
+    addi sp, sp, 20
+    ret
+
+############################################################
+# Reverses bits of a2 given log2(a3)
+reverse_bits:
+    li t0, 0           # result
+    mv t1, a2          # input index
+    li t2, 0           # bit count
+
+    mv t3, a3          # N
+calc_log2_loop:
+    srli t3, t3, 1
+    beqz t3, done_calc_log2
+    addi t2, t2, 1
+    j calc_log2_loop
+done_calc_log2:
+
+reverse_loop:
+    beqz t2, done_reverse
+    andi t4, t1, 1
+    slli t0, t0, 1
+    or t0, t0, t4
+    srli t1, t1, 1
+    addi t2, t2, -1
+    j reverse_loop
+
+done_reverse:
+    mv a0, t0
+    ret
+############################################################
+# Perform all FFT stages
+# a0 = base address of matrix
+# a1 = N (size)
+fft_all_stages:
+    addi sp, sp, -16
+    sw ra, 12(sp)
+    sw s0, 8(sp)
+    sw s1, 4(sp)
+    sw s2, 0(sp)
+
+    mv s0, a0      # base address
+    mv s1, a1      # N
+
+    call log2      # a1 = N → a0 = log2(N)
+    mv t2, a0      # t2 = total stages
+
+    li t0, 1       # current stage = 1
+stage_loop:
+    bgt t0, t2, end_stages
+
+    mv a0, s0      # base address
+    mv a1, s1      # size N
+    mv a2, t0      # current stage
+    call fft_stageN
+
+    addi t0, t0, 1
+    j stage_loop
+
+end_stages:
+    lw ra, 12(sp)
+    lw s0, 8(sp)
+    lw s1, 4(sp)
+    lw s2, 0(sp)
+    addi sp, sp, 16
+    ret
+
+############################################################
+# Performs butterfly operation for a given stage
+# a0 = base address, a1 = N, a2 = stage
+fft_stageN:
+    addi sp, sp, -16
+    sw ra, 12(sp)
+    sw s0, 8(sp)
+    sw s1, 4(sp)
+    sw s2, 0(sp)
+
+    mv s0, a0      # base
+    mv s1, a1      # N
+    mv s2, a2      # stage
+
+    li t0, 1
+    sll t1, t0, s2     # m = 2^stage
+    srli t2, t1, 1      # half_m = m / 2
+
+    li t3, 0            # k = 0
+outer_k_loop:
+    bge t3, s1, end_fft_stageN
+
+    li t4, 0            # j = 0
+inner_j_loop:
+    bge t4, t2, next_k_group
+
+    add t5, t3, t4          # i = k + j
+    sll t6, t5, 2
+    add a3, s0, t6
+    flw ft0, 0(a3)          # x0 = A[i]
+
+    add a4, t5, t2          # i + half_m
+    sll a5, a4, 2
+    add a6, s0, a5
+    flw ft1, 0(a6)         # x1 = A[i + half_m]
+
+    fadd.s ft2, ft0, ft1
+    fsub.s ft3, ft0, ft1
+
+    fsw ft2, 0(a3)
+    fsw ft3, 0(a6)
+
+    addi t4, t4, 1
+    j inner_j_loop
+
+next_k_group:
+    add t3, t3, t1          # k += m
+    j outer_k_loop
+
+end_fft_stageN:
+    lw ra, 12(sp)
+    lw s0, 8(sp)
+    lw s1, 4(sp)
+    lw s2, 0(sp)
+    addi sp, sp, 16
+    ret
+
 
 transpose:
     # Prologue
@@ -124,12 +294,25 @@ _finish:
 ## ALL DATA IS DEFINED HERE LIKE MATRIX, CONSTANTS ETC
 
 ## DATA DEFINE START
-.equ MatrixSize, 5
+.equ MatrixSize, 8
 matrix:
-    .float -10.0, 13.0, 10.0, -3.0, 2.0
-    .float 6.0, 15.0, 4.0, 13.0, 4.0
-    .float 18.0, 2.0, 9.0, 8.0, -4.0
-    .float 5.0, 4.0, 12.0, 17.0, 6.0
-    .float -10.0, 7.0, 13.0, -3.0, 16.0
+    .float 898.25, -510.5, 49.0, -46.5, -156.75, 448.0, 811.75, -554.25
+    .float -393.0, -869.5, -114.0, -0.25, -829.0, 447.25, -321.0, -978.75
+    .float 985.25, -377.0, 979.75, -31.0, -76.25, 553.0, 978.25, 491.75
+    .float 587.25, -462.75, 503.5, -297.75, -835.5, -473.0, -555.75, -172.75
+    .float 766.0, 199.5, -769.5, -505.5, -173.0, -86.0, 813.5, -640.75
+    .float 523.5, -391.75, 309.0, 277.0, 835.75, 751.25, 842.75, 553.0
+    .float 866.75, -474.25, 359.0, -841.25, 658.75, 419.0, 2.5, -128.25
+    .float 720.75, 253.25, 457.5, -244.5, 745.0, -806.25, -813.75, 568.25
+
+.align 4
+twiddles:
+    # For N = 8 (first N/2 twiddles)
+    # Format: real0, imag0, real1, imag1, ...
+    .float 1.0, 0.0      # W0
+    .float 0.7071, -0.7071  # W1
+    .float 0.0, -1.0        # W2
+    .float -0.7071, -0.7071 # W3
+
 ## DATA DEFINE END
 size: .word MatrixSize
